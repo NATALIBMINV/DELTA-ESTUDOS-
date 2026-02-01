@@ -4,12 +4,22 @@ import { ProcessingResult, FileData } from "../types";
 
 const API_KEY = process.env.API_KEY || "";
 
+/**
+ * Função auxiliar para garantir que a resposta seja um JSON válido,
+ * removendo possíveis marcações de markdown do modelo.
+ */
+const cleanJsonResponse = (text: string): string => {
+  return text.replace(/```json/g, "").replace(/```/g, "").trim();
+};
+
 export const processLegalDocuments = async (
   lawName: string,
   lawFiles: FileData[],
   doctrineFiles: FileData[],
   jurisprudenceFiles: FileData[]
 ): Promise<ProcessingResult> => {
+  if (!API_KEY) throw new Error("API Key não configurada no ambiente.");
+
   const ai = new GoogleGenAI({ apiKey: API_KEY });
 
   const lawParts = lawFiles.map(file => ({
@@ -25,19 +35,21 @@ export const processLegalDocuments = async (
   }));
 
   const prompt = `
-    VOCÊ É UM ANALISTA JURÍDICO DE ALTA PERFORMANCE (NÍVEL DELEGADO).
-    TEMA DO ESTUDO: "${lawName}"
+    VOCÊ É UM ANALISTA JURÍDICO DE ALTA PERFORMANCE (ESPECIALISTA EM CARREIRAS DELTA).
+    O TEMA CENTRAL DESTE ESTUDO É: "${lawName}"
     
-    INSTRUÇÕES DE FILTRAGEM TEMÁTICA:
-    1. ESTRUTURA: Siga a ordem dos artigos da LEI SECA enviada.
-    2. FILTRO DE JURISPRUDÊNCIA: Ao analisar os arquivos de Jurisprudência, selecione APENAS teses que afetem o tema "${lawName}". Se o arquivo contiver julgados sobre outros ramos do direito ou leis diversas, DESCARTE-OS.
-    3. FILTRO DE DOUTRINA: Extraia apenas lições doutrinárias relacionadas a "${lawName}".
-    4. INTEGRAÇÃO TRÍADE:
-       - Para cada artigo da lei, apresente o texto legal.
-       - Adicione a doutrina focada no tema.
-       - Adicione as teses jurisprudenciais (STF/STJ) específicas.
+    SUA MISSÃO É INTEGRAR AS TRÊS FONTES (LEI, DOUTRINA E JURISPRUDÊNCIA) SEGUINDO ESTAS REGRAS RÍGIDAS:
     
-    FORMATO: JSON puro. Não inclua comentários fora do JSON.
+    1. FILTRAGEM TEMÁTICA (CRITICAL): Os arquivos de Doutrina e Jurisprudência podem conter múltiplos temas. Você deve ANALISAR cada parágrafo e selecionar APENAS o que for pertinente ao tema "${lawName}". Descarte conteúdos sobre outros crimes ou matérias processuais alheias.
+    
+    2. MAPEAMENTO POR ARTIGO: Use o texto da LEI SECA como base. Para cada artigo:
+       - Transcreva o texto original.
+       - Adicione Doutrina Delta (focada em questões que caem para Delegado).
+       - Adicione Jurisprudência (STF/STJ) que tenha RELAÇÃO DIRETA com o artigo ou o tema "${lawName}".
+    
+    3. QUALIDADE: Se um artigo não tiver jurisprudência específica no material enviado, deixe o campo de jurisprudência como uma lista vazia. Não invente dados.
+    
+    RETORNE APENAS O JSON, SEM TEXTO EXPLICATIVO.
   `;
 
   try {
@@ -53,7 +65,7 @@ export const processLegalDocuments = async (
       },
       config: {
         responseMimeType: "application/json",
-        thinkingConfig: { thinkingBudget: 4000 },
+        thinkingConfig: { thinkingBudget: 12000 }, // Aumentado para análise temática mais profunda
         responseSchema: {
           type: Type.OBJECT,
           properties: {
@@ -88,12 +100,23 @@ export const processLegalDocuments = async (
       }
     });
 
-    const text = response.text;
-    if (!text) throw new Error("A IA não retornou dados. Tente reduzir o número de páginas dos PDFs.");
+    const rawText = response.text;
+    if (!rawText) throw new Error("A IA retornou uma resposta vazia.");
     
-    return JSON.parse(text) as ProcessingResult;
+    const cleanedText = cleanJsonResponse(rawText);
+    return JSON.parse(cleanedText) as ProcessingResult;
   } catch (error: any) {
-    console.error("Erro na análise Tríade:", error);
-    throw new Error(error.message || "Erro na comunicação com o servidor de IA.");
+    console.error("Erro Tríade Gemini:", error);
+    
+    // Tratamento de erros comuns
+    if (error instanceof SyntaxError) {
+      throw new Error("Erro ao processar a estrutura de dados da IA. Tente novamente ou use arquivos menores.");
+    }
+    
+    if (error?.message?.includes("500") || error?.message?.includes("Rpc")) {
+      throw new Error("O volume de páginas é muito grande para uma análise temática profunda. Tente enviar apenas os capítulos pertinentes.");
+    }
+
+    throw new Error(error.message || "Falha na conexão com o cérebro jurídico.");
   }
 };
